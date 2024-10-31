@@ -36,7 +36,7 @@ void publishHomeAssistantConfigMessage();
 void reconnect();
 void publishGenericMessage(const char *topic, const char *payload);
 void setLedColor(uint32_t color);
-void callback(char* topic, byte* payload, unsigned int length);
+void callback(char *topic, byte *payload, unsigned int length);
 
 // Init WiFi/WiFiUDP, NTP and MQTT Client
 WiFiClient espClient;
@@ -82,14 +82,24 @@ const TopicInfo *TOPICS[] = {&CO2_PPM_TOPIC, &TEMPERATURE_TOPIC,
 const int TOPICS_SIZE = sizeof(TOPICS) / sizeof(TOPICS[0]);
 const int fanPin = 5; // PWM-capable pin
 
-void callback(char* topic, byte* payload, unsigned int length) {
+void callback(char *topic, byte *payload, unsigned int length) {
   Serial.print("Message arrived on topic: ");
-  Serial.print(topic);
-  Serial.print(". Message: ");
+
+  // define payload into a string
+  String payload_str = "";
   for (int i = 0; i < length; i++) {
-    Serial.print((char)payload[i]);
+    payload_str += (char)payload[i];
   }
-  Serial.println();
+
+  Serial.print("Payload as string: ");
+  Serial.println(payload_str);
+
+  // Changes the fan state
+  if (payload_str == "on") {
+    ledcWrite(0, 255); // 100% duty cycle
+  } else if (payload_str == "off") {
+    ledcWrite(0, 0); // 0% duty cycle
+  }
 }
 
 void setup() {
@@ -111,27 +121,18 @@ void setup() {
 
   // Sensor Setup
   setup_sensors();
-
-  // pwm fan setup
-  ledcSetup(0, 25000, 8); // Channel 0, 25 kHz, 8-bit resolution
-  ledcAttachPin(fanPin, 0);
 }
 
+unsigned long previousMillis = 0;
+const long interval = 10000;
 void loop() {
 
-  // Example: Turn off the fan
-  ledcWrite(0, 0); // 0% duty cycle
-  delay(10000);
+  client.loop();
 
-  // Example: Set fan to half speed
-  ledcWrite(0, 128); // 50% duty cycle
-  delay(10000);
+  unsigned long currentMillis = millis();
 
-  // Example: Set fan to full speed
-  ledcWrite(0, 255); // 100% duty cycle
-  delay(10000);
-
-  if (airSensor.dataAvailable()) {
+  if (airSensor.dataAvailable() && currentMillis - previousMillis >= interval) {
+    previousMillis = currentMillis;
 
     pushSensorDataToMQTT(airSensor.getCO2(), airSensor.getTemperature(),
                          airSensor.getHumidity(), true);
@@ -146,15 +147,16 @@ void loop() {
     Serial.print(airSensor.getHumidity(), 1);
 
     Serial.println();
-  } else
-    Serial.println("Waiting for new data");
-
-  delay(10000);
+  }
 }
 
 void setup_sensors() {
 
   Wire.begin();
+
+  // pwm fan setup
+  ledcSetup(0, 25000, 8); // Channel 0, 25 kHz, 8-bit resolution
+  ledcAttachPin(fanPin, 0);
 
   // Start sensor using the Wire port, but disable the auto-calibration
   if (airSensor.begin(Wire, false) == false) {
@@ -259,13 +261,13 @@ void setup_wifi() {
   }
 
   // Configure mqtt
+  client.setKeepAlive(300);     // 5 minutes
+  client.setSocketTimeout(300); // 5 minutes
   client.setBufferSize(512);
-  // client.setSocketTimeout(10);
 
-//  adding these 10/29
-  client.setServer(mqtt_server, 1883);
   client.setCallback(callback);
-  
+
+  reconnect();
 
   publishHomeAssistantConfigMessage();
 }
@@ -353,6 +355,9 @@ void reconnect() {
     // Attempt to connect
     if (client.connect(clientId.c_str(), mqtt_username, mqtt_password)) {
       Log.notice(F("Connected as clientId %s :-)" CR), clientId.c_str());
+      bool sub = client.subscribe("growstation/fan");
+      Log.info(F("Subscribed to topic growstation/fan: %s" CR),
+               sub ? "true" : "false");
     } else {
       neopixel.setBrightness(250);
       setLedColor(LED_Colors[RED]);
