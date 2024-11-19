@@ -11,7 +11,9 @@
 #include <WiFiUdp.h>
 #include <Wire.h>
 #include <config.h>
+#include <vector>
 
+#define PIN_NEOPIXEL 2
 Adafruit_NeoPixel neopixel(1, PIN_NEOPIXEL, NEO_GRB + NEO_KHZ800);
 SCD30 airSensor;
 
@@ -38,7 +40,6 @@ void publishGenericMessage(const char *topic, const char *payload);
 void setLedColor(uint32_t color);
 void callback(char *topic, byte *payload, unsigned int length);
 
-// Init WiFi/WiFiUDP, NTP and MQTT Client
 WiFiClient espClient;
 PubSubClient client(mqtt_server, mqtt_port, espClient);
 
@@ -55,32 +56,33 @@ struct TopicInfo {
   const String json_key_name;
 };
 
-const TopicInfo CO2_PPM_TOPIC = {
-    .discovery_topic = "homeassistant/sensor/grow-station-co2ppm/config",
-    .state_topic = "homeassistant/sensor/grow-station-co2ppm/state",
+
+static TopicInfo CO2_PPM_TOPIC = {
+    .discovery_topic = "homeassistant/sensor/" + String(device_name) + "-co2ppm/config",
+    .state_topic = "homeassistant/sensor/" + String(device_name) + "-co2ppm/state",
     .name = "CO2",
     .unit = "PPM",
     .json_key_name = "co2ppm"};
 
-const TopicInfo TEMPERATURE_TOPIC = {
-    .discovery_topic = "homeassistant/sensor/grow-station-temp/config",
-    .state_topic = "homeassistant/sensor/grow-station-temp/state",
+static TopicInfo TEMPERATURE_TOPIC = {
+    .discovery_topic = "homeassistant/sensor/" + String(device_name) + "-temp/config",
+    .state_topic = "homeassistant/sensor/" + String(device_name) + "-temp/state",
     .name = "Temperature",
     .unit = "C",
-    .json_key_name = "temp"};
+    .json_key_name = "temperature"};
 
-const TopicInfo HUMIDITY_TOPIC = {
-    .discovery_topic = "homeassistant/sensor/grow-station-humidity/config",
-    .state_topic = "homeassistant/sensor/grow-station-humidity/state",
+static TopicInfo HUMIDITY_TOPIC = {
+    .discovery_topic =
+        "homeassistant/sensor/" + String(device_name) + "-humidity/config",
+    .state_topic = "homeassistant/sensor/" + String(device_name) + "-humidity/state",
     .name = "Humidity",
     .unit = "%",
     .json_key_name = "humidity"};
 
-const TopicInfo *TOPICS[] = {&CO2_PPM_TOPIC, &TEMPERATURE_TOPIC,
-                             &HUMIDITY_TOPIC};
+// TopicInfo *TOPICS[] = {};
+std::vector<TopicInfo *> TOPICS;
 
-const int TOPICS_SIZE = sizeof(TOPICS) / sizeof(TOPICS[0]);
-const int fanPin = 5; // PWM-capable pin
+const int PWM_FAN_PIN = 14; // PWM-capable pin
 
 void callback(char *topic, byte *payload, unsigned int length) {
   Serial.print("Message arrived on topic: ");
@@ -116,11 +118,11 @@ void setup() {
   neopixel.setBrightness(50);
   neopixel.show();
 
-  // Setup Wifi & MQTT
-  setup_wifi();
-
   // Sensor Setup
   setup_sensors();
+
+  // Setup Wifi & MQTT
+  setup_wifi();
 }
 
 unsigned long previousMillis = 0;
@@ -130,8 +132,9 @@ void loop() {
   client.loop();
 
   unsigned long currentMillis = millis();
+  if (CO2_SENSOR && airSensor.dataAvailable() &&
+      currentMillis - previousMillis >= interval) {
 
-  if (airSensor.dataAvailable() && currentMillis - previousMillis >= interval) {
     previousMillis = currentMillis;
 
     pushSensorDataToMQTT(airSensor.getCO2(), airSensor.getTemperature(),
@@ -152,76 +155,91 @@ void loop() {
 
 void setup_sensors() {
 
+  delay(3000);
+
   Wire.begin();
 
   // pwm fan setup
   ledcSetup(0, 25000, 8); // Channel 0, 25 kHz, 8-bit resolution
-  ledcAttachPin(fanPin, 0);
+  ledcAttachPin(PWM_FAN_PIN, 0);
 
-  // Start sensor using the Wire port, but disable the auto-calibration
-  if (airSensor.begin(Wire, false) == false) {
-    Serial.println("Air sensor not detected. Please check wiring. Freezing...");
-    while (1)
-      ;
-  }
+  if (CO2_SENSOR == true) {
 
-  uint16_t settingVal; // The settings will be returned in settingVal
+    TOPICS.push_back(&CO2_PPM_TOPIC);
+    TOPICS.push_back(&TEMPERATURE_TOPIC);
+    TOPICS.push_back(&HUMIDITY_TOPIC);
 
-  if (airSensor.getForcedRecalibration(&settingVal) == true) // Get the setting
-  {
-    Serial.print("Forced recalibration factor (ppm) is ");
-    Serial.println(settingVal);
+    // Start sensor using the Wire port, but disable the auto-calibration
+    if (airSensor.begin(Wire, false) == false) {
+      Serial.println(
+          "Air sensor not detected. Please check wiring. Freezing...");
+      while (1)
+        ;
+    }
+
+    uint16_t settingVal; // The settings will be returned in settingVal
+
+    if (airSensor.getForcedRecalibration(&settingVal) ==
+        true) // Get the setting
+    {
+      Serial.print("Forced recalibration factor (ppm) is ");
+      Serial.println(settingVal);
+    } else {
+      Serial.print("getForcedRecalibration failed! Freezing...");
+      while (1)
+        ; // Do nothing more
+    }
+
+    if (airSensor.getMeasurementInterval(&settingVal) ==
+        true) // Get the setting
+    {
+      Serial.print("Measurement interval (s) is ");
+      Serial.println(settingVal);
+    } else {
+      Serial.print("getMeasurementInterval failed! Freezing...");
+      while (1)
+        ; // Do nothing more
+    }
+
+    if (airSensor.getTemperatureOffset(&settingVal) == true) // Get the setting
+    {
+      Serial.print("Temperature offset (C) is ");
+      Serial.println(((float)settingVal) / 100.0, 2);
+    } else {
+      Serial.print("getTemperatureOffset failed! Freezing...");
+      while (1)
+        ; // Do nothing more
+    }
+
+    if (airSensor.getAltitudeCompensation(&settingVal) ==
+        true) // Get the setting
+    {
+      Serial.print("Altitude offset (m) is ");
+      Serial.println(settingVal);
+    } else {
+      Serial.print("getAltitudeCompensation failed! Freezing...");
+      while (1)
+        ; // Do nothing more
+    }
+
+    if (airSensor.getFirmwareVersion(&settingVal) == true) // Get the setting
+    {
+      Serial.print("Firmware version is 0x");
+      Serial.println(settingVal, HEX);
+    } else {
+      Serial.print("getFirmwareVersion! Freezing...");
+      while (1)
+        ; // Do nothing more
+    }
+
+    Serial.print("Auto calibration set to ");
+    if (airSensor.getAutoSelfCalibration() == true)
+      Serial.println("true");
+    else
+      Serial.println("false");
   } else {
-    Serial.print("getForcedRecalibration failed! Freezing...");
-    while (1)
-      ; // Do nothing more
+    Serial.println("CO2_SENSOR is false, not setting up the CO2 sensor");
   }
-
-  if (airSensor.getMeasurementInterval(&settingVal) == true) // Get the setting
-  {
-    Serial.print("Measurement interval (s) is ");
-    Serial.println(settingVal);
-  } else {
-    Serial.print("getMeasurementInterval failed! Freezing...");
-    while (1)
-      ; // Do nothing more
-  }
-
-  if (airSensor.getTemperatureOffset(&settingVal) == true) // Get the setting
-  {
-    Serial.print("Temperature offset (C) is ");
-    Serial.println(((float)settingVal) / 100.0, 2);
-  } else {
-    Serial.print("getTemperatureOffset failed! Freezing...");
-    while (1)
-      ; // Do nothing more
-  }
-
-  if (airSensor.getAltitudeCompensation(&settingVal) == true) // Get the setting
-  {
-    Serial.print("Altitude offset (m) is ");
-    Serial.println(settingVal);
-  } else {
-    Serial.print("getAltitudeCompensation failed! Freezing...");
-    while (1)
-      ; // Do nothing more
-  }
-
-  if (airSensor.getFirmwareVersion(&settingVal) == true) // Get the setting
-  {
-    Serial.print("Firmware version is 0x");
-    Serial.println(settingVal, HEX);
-  } else {
-    Serial.print("getFirmwareVersion! Freezing...");
-    while (1)
-      ; // Do nothing more
-  }
-
-  Serial.print("Auto calibration set to ");
-  if (airSensor.getAutoSelfCalibration() == true)
-    Serial.println("true");
-  else
-    Serial.println("false");
 }
 
 void setup_wifi() {
@@ -309,17 +327,21 @@ void publishGenericMessage(const char *topic, const char *payload) {
 }
 
 void publishHomeAssistantConfigMessage() {
-  StaticJsonDocument<512> device;
-  device["name"] = "Grow Station";
-  device["identifiers"] = "1234";
 
-  const int TOPICS_SIZE = sizeof(TOPICS) / sizeof(TOPICS[0]);
-  for (int index = 0; index < TOPICS_SIZE; index++) {
+  StaticJsonDocument<512> device;
+  device["name"] = "Mini Weather Station ( " + String(device_name) + " )";
+  device["identifiers"] = String(device_name);
+  device["manufacturer"] = "jmillsy";
+  device["model"] = "jmillsy-" + String(device_name);
+
+  for (int index = 0; index < TOPICS.size(); index++) {
+
     StaticJsonDocument<512> config;
     config["name"] = TOPICS[index]->name;
     config["state_topic"] = TOPICS[index]->state_topic;
     config["unit_of_measurement"] = TOPICS[index]->unit;
-    String unique_id = "scd30" + TOPICS[index]->name;
+
+    String unique_id = String(device_name) + "scd30" + TOPICS[index]->name;
     unique_id.replace(" ", "");
     unique_id.toLowerCase();
     config["unique_id"] = unique_id;
@@ -334,6 +356,9 @@ void publishHomeAssistantConfigMessage() {
     // Serialize the JSON object to a string
     char configAsJson[512];
     serializeJson(config, configAsJson);
+
+    Serial.println("Config as JSON:");
+    Serial.println(configAsJson);
 
     publishGenericMessage(TOPICS[index]->discovery_topic.c_str(), configAsJson);
   }
@@ -355,8 +380,8 @@ void reconnect() {
     // Attempt to connect
     if (client.connect(clientId.c_str(), mqtt_username, mqtt_password)) {
       Log.notice(F("Connected as clientId %s :-)" CR), clientId.c_str());
-      bool sub = client.subscribe("growstation/fan");
-      Log.info(F("Subscribed to topic growstation/fan: %s" CR),
+      bool sub = client.subscribe("mini-weather-station/1/fan");
+      Log.info(F("Subscribed to topic mini-weather-station/1/fan: %s" CR),
                sub ? "true" : "false");
     } else {
       neopixel.setBrightness(250);

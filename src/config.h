@@ -6,6 +6,10 @@
 #define ST(A) #A
 #define STR(A) ST(A)
 
+#ifdef CO2_SENSOR
+const char *co2_sensor = STR(CO2_SENSOR);
+#endif
+
 #ifdef WIFI_SSID
 const char *ssid = STR(WIFI_SSID);
 #endif
